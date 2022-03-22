@@ -8,9 +8,11 @@
 
 import Time "mo:base/Time";
 import P "mo:base/Prelude";
+import Text "mo:base/Text";
 
 module {
     /// Update call operations
+    public type AccountIdentifier = Text;
     public type Operation = {
         #mint;
         #burn;
@@ -28,8 +30,8 @@ module {
         caller: ?Principal;
         op: Operation;
         index: Nat;
-        from: Principal;
-        to: Principal;
+        from: AccountIdentifier;
+        to: AccountIdentifier;
         amount: Nat;
         fee: Nat;
         timestamp: Time.Time;

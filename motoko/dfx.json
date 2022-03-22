@@ -3,5 +3,24 @@
     "token": {
       "main": "src/token.mo"
     }
-  }
+  },
+  "defaults": {
+      "build": {
+          "packtool": "vessel sources"
+      }
+  },
+  "dfx": "0.8.4",
+  "networks": {
+      "local": {
+          "bind": "127.0.0.1:8000",
+          "type": "ephemeral"
+      },
+      "ic_pro": {
+          "providers": [
+              "https://ic0.app"
+          ],
+          "type": "persistent"
+      }
+  },
+  "version": 1
 }

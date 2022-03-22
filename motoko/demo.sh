@@ -12,16 +12,23 @@ DAN_HOME=$(mktemp -d)
 FEE_HOME=$(mktemp -d)
 HOME=$ALICE_HOME
 
-ALICE_PUBLIC_KEY="principal \"$( \
+ALICE_PUBLIC_KEY="\"$( \
     HOME=$ALICE_HOME dfx identity get-principal
 )\""
-BOB_PUBLIC_KEY="principal \"$( \
+ALICE_PRINCIPAL="principal \"$( \
+    HOME=$ALICE_HOME dfx identity get-principal
+)\""
+BOB_PUBLIC_KEY="\"$( \
     HOME=$BOB_HOME dfx identity get-principal
 )\""
-DAN_PUBLIC_KEY="principal \"$( \
+
+DAN_PUBLIC_KEY="\"$( \
     HOME=$DAN_HOME dfx identity get-principal
 )\""
-FEE_PUBLIC_KEY="principal \"$( \
+FEE_PUBLIC_KEY="\"$( \
+    HOME=$FEE_HOME dfx identity get-principal
+)\""
+FEE_PRICIPAL="principal \"$( \
     HOME=$FEE_HOME dfx identity get-principal
 )\""
 
@@ -44,13 +51,13 @@ echo == Install token canister
 echo
 
 HOME=$ALICE_HOME
-eval dfx canister --no-wallet install token --argument="'(\"Test Token Logo\", \"Test Token Name\", \"Test Token Symbol\", 3, 1000000, $ALICE_PUBLIC_KEY, 0)'"
+eval dfx canister --no-wallet install token --argument="'(\"Test Token Logo\", \"Test Token Name\", \"Test Token Symbol\", 3, 1000000, $ALICE_PRINCIPAL, 0)'"
 
 echo
 echo == Initial setting for token canister
 echo
 
-eval dfx canister --no-wallet call token setFeeTo "'($FEE_PUBLIC_KEY)'"
+eval dfx canister --no-wallet call token setFeeTo "'($FEE_PRICIPAL)'"
 eval dfx canister --no-wallet call token setFee "'(100)'"
 
 echo

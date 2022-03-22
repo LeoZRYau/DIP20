@@ -21,6 +21,9 @@ import Text "mo:base/Text";
 import ExperimentalCycles "mo:base/ExperimentalCycles";
 import Cap "./cap/Cap";
 import Root "./cap/Root";
+import Utils "./utils";
+import PrincipalUtils "mo:commons/PrincipalUtils";
+import Debug "mo:base/Debug";
 
 shared(msg) actor class Token(
     _logo: Text,
@@ -31,6 +34,7 @@ shared(msg) actor class Token(
     _owner: Principal,
     _fee: Nat
     ) = this {
+    type AccountIdentifier = Types.AccountIdentifier;
     type Operation = Types.Operation;
     type TransactionStatus = Types.TransactionStatus;
     type TxRecord = Types.TxRecord;
@@ -56,29 +60,33 @@ shared(msg) actor class Token(
             #Other: Text;
             #BlockUsed;
             #AmountTooSmall;
+            #InvalidAddress: Text;
         };
     };
-
     private stable var owner_ : Principal = _owner;
+    private stable var ownerAccount: AccountIdentifier = PrincipalUtils.toAddress(owner_); 
     private stable var logo_ : Text = _logo;
     private stable var name_ : Text = _name;
     private stable var decimals_ : Nat8 = _decimals;
     private stable var symbol_ : Text = _symbol;
     private stable var totalSupply_ : Nat = _totalSupply;
-    private stable var blackhole : Principal = Principal.fromText("aaaaa-aa");
+    private stable var blackhole : AccountIdentifier = PrincipalUtils.toAddress(Principal.fromText("aaaaa-aa"));
     private stable var feeTo : Principal = owner_;
+    private stable var feeToAccount: AccountIdentifier = PrincipalUtils.toAddress(feeTo); 
     private stable var fee : Nat = _fee;
-    private stable var balanceEntries : [(Principal, Nat)] = [];
-    private stable var allowanceEntries : [(Principal, [(Principal, Nat)])] = [];
-    private var balances = HashMap.HashMap<Principal, Nat>(1, Principal.equal, Principal.hash);
-    private var allowances = HashMap.HashMap<Principal, HashMap.HashMap<Principal, Nat>>(1, Principal.equal, Principal.hash);
-    balances.put(owner_, totalSupply_);
+    private stable var balanceEntries : [(AccountIdentifier, Nat)] = [];
+    private stable var allowanceEntries : [(AccountIdentifier, [(AccountIdentifier, Nat)])] = [];
+
+    private var balances = HashMap.HashMap<AccountIdentifier, Nat>(1, Text.equal, Text.hash);
+    private var allowances = HashMap.HashMap<AccountIdentifier, HashMap.HashMap<AccountIdentifier, Nat>>(1, Text.equal, Text.hash);
+
+    balances.put(ownerAccount, totalSupply_);
     private stable let genesis : TxRecord = {
         caller = ?owner_;
         op = #mint;
         index = 0;
         from = blackhole;
-        to = owner_;
+        to = ownerAccount;
         amount = totalSupply_;
         fee = 0;
         timestamp = Time.now();
@@ -106,13 +114,13 @@ shared(msg) actor class Token(
         ignore c.insert(record);
     };
 
-    private func _chargeFee(from: Principal, fee: Nat) {
+    private func _chargeFee(from: AccountIdentifier, fee: Nat) {
         if(fee > 0) {
-            _transfer(from, feeTo, fee);
+            _transfer(from, feeToAccount, fee);
         };
     };
 
-    private func _transfer(from: Principal, to: Principal, value: Nat) {
+    private func _transfer(from: AccountIdentifier, to: AccountIdentifier, value: Nat) {
         let from_balance = _balanceOf(from);
         let from_balance_new : Nat = from_balance - value;
         if (from_balance_new != 0) { balances.put(from, from_balance_new); }
@@ -123,14 +131,14 @@ shared(msg) actor class Token(
         if (to_balance_new != 0) { balances.put(to, to_balance_new); };
     };
 
-    private func _balanceOf(who: Principal) : Nat {
+    private func _balanceOf(who: AccountIdentifier) : Nat {
         switch (balances.get(who)) {
             case (?balance) { return balance; };
             case (_) { return 0; };
         }
     };
 
-    private func _allowance(owner: Principal, spender: Principal) : Nat {
+    private func _allowance(owner: AccountIdentifier, spender: AccountIdentifier) : Nat {
         switch(allowances.get(owner)) {
             case (?allowance_owner) {
                 switch(allowance_owner.get(spender)) {
@@ -156,14 +164,35 @@ shared(msg) actor class Token(
     */
 
     /// Transfers value amount of tokens to Principal to.
-    public shared(msg) func transfer(to: Principal, value: Nat) : async TxReceipt {
-        if (_balanceOf(msg.caller) < value + fee) { return #Err(#InsufficientBalance); };
-        _chargeFee(msg.caller, fee);
-        _transfer(msg.caller, to, value);
+    public shared(msg) func transfer(to: Text, value: Nat) : async TxReceipt {
+
+        let _to: AccountIdentifier = switch(Utils.textToPrincipal(to)) { 
+            case (?p) {
+                PrincipalUtils.toAddress(p);
+            }; 
+            case (_) {
+                if (Utils.isAccountIdentifier(to)) {
+                    to;
+                } else {
+                    return #Err(#InvalidAddress(to));
+                };
+            }
+        };
+        Debug.print("==>transfer._to=" # _to);
+
+        let _caller: Principal = msg.caller;
+        let _from: AccountIdentifier  = PrincipalUtils.toAddress(_caller);
+        
+        if (_balanceOf(_from) < value + fee) { 
+            return #Err(#InsufficientBalance); 
+        };
+        _chargeFee(_from, fee);
+        _transfer(_from, _to, value);
+        // TODO 0 check is the record stores in cap..
         ignore addRecord(
-            msg.caller, "transfer",
+            _caller, "transfer",
             [
-                ("to", #Principal(to)),
+                ("to", #Text(_to)),
                 ("value", #U64(u64(value))),
                 ("fee", #U64(u64(fee)))
             ]
@@ -173,30 +202,66 @@ shared(msg) actor class Token(
     };
 
     /// Transfers value amount of tokens from Principal from to Principal to.
-    public shared(msg) func transferFrom(from: Principal, to: Principal, value: Nat) : async TxReceipt {
-        if (_balanceOf(from) < value + fee) { return #Err(#InsufficientBalance); };
-        let allowed : Nat = _allowance(from, msg.caller);
-        if (allowed < value + fee) { return #Err(#InsufficientAllowance); };
-        _chargeFee(from, fee);
-        _transfer(from, to, value);
+    public shared(msg) func transferFrom(from: Text, to: Text, value: Nat) : async TxReceipt {
+
+        let _from: AccountIdentifier = switch(Utils.textToPrincipal(from)) { 
+            case (?p) {
+                PrincipalUtils.toAddress(p);
+            }; 
+            case (_) {
+                if (Utils.isAccountIdentifier(from)) {
+                    from;
+                } else {
+                    return #Err(#InvalidAddress(from));
+                };
+            }
+        };
+
+        let _to: AccountIdentifier = switch(Utils.textToPrincipal(to)) { 
+            case (?p) {
+                PrincipalUtils.toAddress(p);
+            }; 
+            case (_) {
+                if (Utils.isAccountIdentifier(to)) {
+                    to;
+                } else {
+                    return #Err(#InvalidAddress(to));
+                };
+            }
+        };
+        Debug.print("==>transferFrom. _from=" # _from # ", _to=" # _to);
+        let _caller = msg.caller;
+        let _callerAccount = PrincipalUtils.toAddress(_caller);
+
+        if (_balanceOf(_from) < value + fee) { 
+            return #Err(#InsufficientBalance); 
+        };
+        let allowed : Nat = _allowance(_from, _callerAccount);
+        if (allowed < value + fee) { 
+            return #Err(#InsufficientAllowance); 
+        };
+
+        _chargeFee(_from, fee);
+        _transfer(_from, _to, value);
+
         let allowed_new : Nat = allowed - value - fee;
         if (allowed_new != 0) {
-            let allowance_from = Types.unwrap(allowances.get(from));
-            allowance_from.put(msg.caller, allowed_new);
+            let allowance_from = Types.unwrap(allowances.get(_from));
+            allowance_from.put(_callerAccount, allowed_new);
             allowances.put(from, allowance_from);
         } else {
             if (allowed != 0) {
-                let allowance_from = Types.unwrap(allowances.get(from));
-                allowance_from.delete(msg.caller);
-                if (allowance_from.size() == 0) { allowances.delete(from); }
-                else { allowances.put(from, allowance_from); };
+                let allowance_from = Types.unwrap(allowances.get(_from));
+                allowance_from.delete(_callerAccount);
+                if (allowance_from.size() == 0) { allowances.delete(_from); }
+                else { allowances.put(_from, allowance_from); };
             };
         };
         ignore addRecord(
             msg.caller, "transferFrom",
             [
-                ("from", #Principal(from)),
-                ("to", #Principal(to)),
+                ("from", #Text(_from)),
+                ("to", #Text(_to)),
                 ("value", #U64(u64(value))),
                 ("fee", #U64(u64(fee)))
             ]
@@ -207,28 +272,46 @@ shared(msg) actor class Token(
 
     /// Allows spender to withdraw from your account multiple times, up to the value amount.
     /// If this function is called again it overwrites the current allowance with value.
-    public shared(msg) func approve(spender: Principal, value: Nat) : async TxReceipt {
-        if(_balanceOf(msg.caller) < fee) { return #Err(#InsufficientBalance); };
-        _chargeFee(msg.caller, fee);
+    public shared(msg) func approve(spender: Text, value: Nat) : async TxReceipt {
+        let _spender: AccountIdentifier = switch(Utils.textToPrincipal(spender)) { 
+            case (?p) {
+                PrincipalUtils.toAddress(p);
+            }; 
+            case (_) {
+                if (Utils.isAccountIdentifier(spender)) {
+                    spender;
+                } else {
+                    return #Err(#InvalidAddress(spender));
+                };
+            }
+        };
+        Debug.print("==>approve. _spender=" # _spender);
+        let _caller = msg.caller;
+        let _callerAccount = PrincipalUtils.toAddress(_caller);
+
+        if(_balanceOf(_callerAccount) < fee) { 
+            return #Err(#InsufficientBalance); 
+        };
+        _chargeFee(_callerAccount, fee);
         let v = value + fee;
-        if (value == 0 and Option.isSome(allowances.get(msg.caller))) {
-            let allowance_caller = Types.unwrap(allowances.get(msg.caller));
-            allowance_caller.delete(spender);
-            if (allowance_caller.size() == 0) { allowances.delete(msg.caller); }
-            else { allowances.put(msg.caller, allowance_caller); };
-        } else if (value != 0 and Option.isNull(allowances.get(msg.caller))) {
-            var temp = HashMap.HashMap<Principal, Nat>(1, Principal.equal, Principal.hash);
-            temp.put(spender, v);
-            allowances.put(msg.caller, temp);
-        } else if (value != 0 and Option.isSome(allowances.get(msg.caller))) {
-            let allowance_caller = Types.unwrap(allowances.get(msg.caller));
-            allowance_caller.put(spender, v);
-            allowances.put(msg.caller, allowance_caller);
+        if (value == 0 and Option.isSome(allowances.get(_callerAccount))) {
+            let allowance_caller = Types.unwrap(allowances.get(_callerAccount));
+            allowance_caller.delete(_spender);
+            if (allowance_caller.size() == 0) { allowances.delete(_callerAccount); }
+            else { allowances.put(_callerAccount, allowance_caller); };
+        } else if (value != 0 and Option.isNull(allowances.get(_callerAccount))) {
+            var temp = HashMap.HashMap<AccountIdentifier, Nat>(1, Text.equal, Text.hash);
+            temp.put(_spender, v);
+            allowances.put(_callerAccount, temp);
+        } else if (value != 0 and Option.isSome(allowances.get(_callerAccount))) {
+            let allowance_caller = Types.unwrap(allowances.get(_callerAccount));
+            allowance_caller.put(_spender, v);
+            allowances.put(_callerAccount, allowance_caller);
         };
         ignore addRecord(
             msg.caller, "approve",
             [
-                ("to", #Principal(spender)),
+                ("to", #Text(_spender)),
                 ("value", #U64(u64(value))),
                 ("fee", #U64(u64(fee)))
             ]
@@ -237,17 +320,32 @@ shared(msg) actor class Token(
         return #Ok(txcounter - 1);
     };
 
-    public shared(msg) func mint(to: Principal, value: Nat): async TxReceipt {
+    public shared(msg) func mint(to: Text, value: Nat): async TxReceipt {
         if(msg.caller != owner_) {
             return #Err(#Unauthorized);
         };
-        let to_balance = _balanceOf(to);
+        let _to: AccountIdentifier = switch(Utils.textToPrincipal(to)) { 
+            case (?p) {
+                PrincipalUtils.toAddress(p);
+            }; 
+            case (_) {
+                if (Utils.isAccountIdentifier(to)) {
+                    to;
+                } else {
+                    return #Err(#InvalidAddress(to));
+                };
+            }
+        };
+        Debug.print("==>transfer._to=" # _to);
+
+        
+        let to_balance = _balanceOf(_to);
         totalSupply_ += value;
-        balances.put(to, to_balance + value);
+        balances.put(_to, to_balance + value);
         ignore addRecord(
             msg.caller, "mint",
             [
-                ("to", #Principal(to)),
+                ("to", #Text(_to)),
                 ("value", #U64(u64(value))),
                 ("fee", #U64(u64(0)))
             ]
@@ -257,14 +355,17 @@ shared(msg) actor class Token(
     };
 
     public shared(msg) func burn(amount: Nat): async TxReceipt {
-        let from_balance = _balanceOf(msg.caller);
+        let _caller = msg.caller;
+        let _callerAccount = PrincipalUtils.toAddress(_caller);
+
+        let from_balance = _balanceOf(_callerAccount);
         if(from_balance < amount) {
             return #Err(#InsufficientBalance);
         };
         totalSupply_ -= amount;
-        balances.put(msg.caller, from_balance - amount);
+        balances.put(_callerAccount, from_balance - amount);
         ignore addRecord(
-            msg.caller, "burn",
+            _caller, "burn",
             [
                 ("from", #Principal(msg.caller)),
                 ("value", #U64(u64(amount))),
@@ -299,12 +400,48 @@ shared(msg) actor class Token(
         return fee;
     };
 
-    public query func balanceOf(who: Principal) : async Nat {
-        return _balanceOf(who);
+    public query func balanceOf(who: Text) : async Nat {
+        let _who: AccountIdentifier = switch(Utils.textToPrincipal(who)) { 
+            case (?p) {
+                PrincipalUtils.toAddress(p);
+            }; 
+            case (_) {
+                if (Utils.isAccountIdentifier(who)) {
+                    who;
+                } else {
+                    return 0;
+                };
+            }
+        };
+        return _balanceOf(_who);
     };
 
-    public query func allowance(owner: Principal, spender: Principal) : async Nat {
-        return _allowance(owner, spender);
+    public query func allowance(owner: Text, spender: Text) : async Nat {
+        let _owner: AccountIdentifier = switch(Utils.textToPrincipal(owner)) { 
+            case (?p) {
+                PrincipalUtils.toAddress(p);
+            }; 
+            case (_) {
+                if (Utils.isAccountIdentifier(owner)) {
+                    owner;
+                } else {
+                    return 0;
+                };
+            }
+        };
+        let _spender: AccountIdentifier = switch(Utils.textToPrincipal(spender)) { 
+            case (?p) {
+                PrincipalUtils.toAddress(p);
+            }; 
+            case (_) {
+                if (Utils.isAccountIdentifier(spender)) {
+                    spender;
+                } else {
+                    return 0;
+                };
+            }
+        };
+        return _allowance(_owner, _spender);
     };
 
     public query func getMetadata() : async Metadata {
@@ -343,6 +480,7 @@ shared(msg) actor class Token(
     public shared(msg) func setFeeTo(to: Principal) {
         assert(msg.caller == owner_);
         feeTo := to;
+        feeToAccount := PrincipalUtils.toAddress(feeTo);
     };
 
     public shared(msg) func setFee(_fee: Nat) {
@@ -383,9 +521,9 @@ shared(msg) actor class Token(
         }
     };
 
-    public query func getHolders(start: Nat, limit: Nat) : async [(Principal, Nat)] {
+    public query func getHolders(start: Nat, limit: Nat) : async [(AccountIdentifier, Nat)] {
         let temp =  Iter.toArray(balances.entries());
-        func order (a: (Principal, Nat), b: (Principal, Nat)) : Order.Order {
+        func order (a: (AccountIdentifier, Nat), b: (AccountIdentifier, Nat)) : Order.Order {
             return Nat.compare(b.1, a.1);
         };
         let sorted = Array.sort(temp, order);
@@ -394,7 +532,7 @@ shared(msg) actor class Token(
         } else {
             limit
         };
-        let res = Array.init<(Principal, Nat)>(limit_, (owner_, 0));
+        let res = Array.init<(AccountIdentifier, Nat)>(limit_, (ownerAccount, 0));
         for (i in Iter.range(0, limit_ - 1)) {
             res[i] := sorted[i+start];
         };
@@ -409,8 +547,20 @@ shared(msg) actor class Token(
         return size;
     };
 
-    public query func getUserApprovals(who : Principal) : async [(Principal, Nat)] {
-        switch (allowances.get(who)) {
+    public query func getUserApprovals(who : Text) : async [(AccountIdentifier, Nat)] {
+        let _who: AccountIdentifier = switch(Utils.textToPrincipal(who)) { 
+            case (?p) {
+                PrincipalUtils.toAddress(p);
+            }; 
+            case (_) {
+                if (Utils.isAccountIdentifier(who)) {
+                    who;
+                } else {
+                    return [];
+                };
+            }
+        };
+        switch (allowances.get(_who)) {
             case (?allowance_who) {
                 return Iter.toArray(allowance_who.entries());
             };
@@ -426,7 +576,7 @@ shared(msg) actor class Token(
     system func preupgrade() {
         balanceEntries := Iter.toArray(balances.entries());
         var size : Nat = allowances.size();
-        var temp : [var (Principal, [(Principal, Nat)])] = Array.init<(Principal, [(Principal, Nat)])>(size, (owner_, []));
+        var temp : [var (AccountIdentifier, [(AccountIdentifier, Nat)])] = Array.init<(AccountIdentifier, [(AccountIdentifier, Nat)])>(size, (ownerAccount, []));
         size := 0;
         for ((k, v) in allowances.entries()) {
             temp[size] := (k, Iter.toArray(v.entries()));
@@ -436,10 +586,10 @@ shared(msg) actor class Token(
     };
 
     system func postupgrade() {
-        balances := HashMap.fromIter<Principal, Nat>(balanceEntries.vals(), 1, Principal.equal, Principal.hash);
+        balances := HashMap.fromIter<AccountIdentifier, Nat>(balanceEntries.vals(), 1, Text.equal, Text.hash);
         balanceEntries := [];
         for ((k, v) in allowanceEntries.vals()) {
-            let allowed_temp = HashMap.fromIter<Principal, Nat>(v.vals(), 1, Principal.equal, Principal.hash);
+            let allowed_temp = HashMap.fromIter<AccountIdentifier, Nat>(v.vals(), 1, Text.equal, Text.hash);
             allowances.put(k, allowed_temp);
         };
         allowanceEntries := [];
